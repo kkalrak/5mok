@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>오목</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: #1a1a2e;
+    color: #eee;
+    font-family: 'Segoe UI', sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    min-height: 100vh;
+    padding: 20px;
+  }
+
+  h1 {
+    font-size: 2rem;
+    margin-bottom: 12px;
+    letter-spacing: 4px;
+    color: #e2b96f;
+  }
+
+  #status {
+    font-size: 1.1rem;
+    margin-bottom: 14px;
+    min-height: 1.4em;
+    color: #ccc;
+  }
+
+  #controls {
+    display: flex;
+    gap: 10px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  button {
+    padding: 8px 20px;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.95rem;
+    transition: opacity 0.2s;
+  }
+  button:hover { opacity: 0.85; }
+
+  #btnRestart { background: #e2b96f; color: #1a1a2e; font-weight: bold; }
+  #btnMode    { background: #3a3a5c; color: #eee; }
+  #btnUndo    { background: #3a3a5c; color: #eee; }
+
+  #board-wrap {
+    position: relative;
+    user-select: none;
+  }
+
+  canvas {
+    display: block;
+    border-radius: 4px;
+    cursor: crosshair;
+  }
+
+  #thinking {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: rgba(0,0,0,0.65);
+    color: #e2b96f;
+    padding: 10px 22px;
+    border-radius: 8px;
+    font-size: 1rem;
+    pointer-events: none;
+    display: none;
+  }
+</style>
+</head>
+<body>
+<h1>오 목</h1>
+<div id="status">흑돌(당신)의 차례</div>
+<div id="controls">
+  <button id="btnRestart">새 게임</button>
+  <button id="btnMode">모드: 인간 vs AI</button>
+  <button id="btnUndo">무르기</button>
+</div>
+<div id="board-wrap">
+  <canvas id="canvas"></canvas>
+  <div id="thinking">AI 생각 중...</div>
+</div>
+
+<script>
+const EMPTY = 0, BLACK = 1, WHITE = 2;
+const SIZE = 15;
+const CELL = 44;
+const PAD  = 36;
+const CSIZE = PAD * 2 + CELL * (SIZE - 1);
+
+const canvas = document.getElementById('canvas');
+const ctx    = canvas.getContext('2d');
+canvas.width = canvas.height = CSIZE;
+
+const statusEl   = document.getElementById('status');
+const thinkingEl = document.getElementById('thinking');
+
+let board, current, gameOver, history, mode;
+// mode: 'hva' = human(black) vs ai(white), 'hvh' = human vs human, 'ava' = ai vs ai
+mode = 'hva';
+
+function newGame() {
+  board    = Array.from({length: SIZE}, () => new Array(SIZE).fill(EMPTY));
+  current  = BLACK;
+  gameOver = false;
+  history  = [];
+  draw();
+  updateStatus();
+  if (mode === 'ava') setTimeout(aiMove, 100);
+}
+
+// ─── Drawing ────────────────────────────────────────────────────────────────
+
+function draw() {
+  // board background
+  ctx.fillStyle = '#dcb06a';
+  ctx.fillRect(0, 0, CSIZE, CSIZE);
+
+  // grid
+  ctx.strokeStyle = '#8b6914';
+  ctx.lineWidth = 1;
+  for (let i = 0; i < SIZE; i++) {
+    const x = PAD + i * CELL;
+    ctx.beginPath(); ctx.moveTo(x, PAD); ctx.lineTo(x, PAD + (SIZE-1)*CELL); ctx.stroke();
+    const y = PAD + i * CELL;
+    ctx.beginPath(); ctx.moveTo(PAD, y); ctx.lineTo(PAD + (SIZE-1)*CELL, y); ctx.stroke();
+  }
+
+  // star points
+  const stars = [3,7,11];
+  ctx.fillStyle = '#8b6914';
+  for (const r of stars) for (const c of stars) {
+    ctx.beginPath();
+    ctx.arc(PAD + c*CELL, PAD + r*CELL, 4, 0, Math.PI*2);
+    ctx.fill();
+  }
+
+  // stones
+  for (let r = 0; r < SIZE; r++) {
+    for (let c = 0; c < SIZE; c++) {
+      if (board[r][c] !== EMPTY) drawStone(r, c, board[r][c]);
+    }
+  }
+
+  // last move marker
+  if (history.length > 0) {
+    const [lr, lc] = history[history.length-1].slice(0,2);
+    const x = PAD + lc*CELL, y = PAD + lr*CELL;
+    ctx.strokeStyle = board[lr][lc] === BLACK ? '#ff4444' : '#4488ff';
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(x, y, CELL*0.22, 0, Math.PI*2); ctx.stroke();
+  }
+}
+
+function drawStone(r, c, player) {
+  const x = PAD + c*CELL, y = PAD + r*CELL, rad = CELL*0.44;
+  const grad = ctx.createRadialGradient(x-rad*0.3, y-rad*0.3, rad*0.05, x, y, rad);
+  if (player === BLACK) {
+    grad.addColorStop(0, '#888'); grad.addColorStop(1, '#111');
+  } else {
+    grad.addColorStop(0, '#fff'); grad.addColorStop(1, '#bbb');
+  }
+  ctx.fillStyle = grad;
+  ctx.beginPath(); ctx.arc(x, y, rad, 0, Math.PI*2); ctx.fill();
+}
+
+// ─── Status ─────────────────────────────────────────────────────────────────
+
+function updateStatus(msg) {
+  if (msg) { statusEl.textContent = msg; return; }
+  if (gameOver) return;
+  const who = current === BLACK ? '흑돌' : '백돌';
+  const isAI = (mode === 'hva' && current === WHITE) || mode === 'ava';
+  statusEl.textContent = `${who}(${isAI ? 'AI' : '당신'})의 차례`;
+}
+
+// ─── Place stone ─────────────────────────────────────────────────────────────
+
+function place(r, c) {
+  if (gameOver || board[r][c] !== EMPTY) return false;
+  board[r][c] = current;
+  history.push([r, c, current]);
+  draw();
+  if (checkWin(r, c, current)) {
+    gameOver = true;
+    const winner = current === BLACK ? '흑돌' : '백돌';
+    const isAI = (mode === 'hva' && current === WHITE) || mode === 'ava';
+    updateStatus(`${winner}(${isAI ? 'AI' : '당신'}) 승리!`);
+    drawWinLine(r, c, current);
+    return true;
+  }
+  if (history.length === SIZE*SIZE) {
+    gameOver = true;
+    updateStatus('무승부!');
+    return true;
+  }
+  current = current === BLACK ? WHITE : BLACK;
+  updateStatus();
+  return true;
+}
+
+function drawWinLine(r, c, player) {
+  const dirs = [[0,1],[1,0],[1,1],[1,-1]];
+  for (const [dr,dc] of dirs) {
+    const cells = getLine(r, c, player, dr, dc);
+    if (cells.length >= 5) {
+      ctx.strokeStyle = '#ff2222';
+      ctx.lineWidth = 4;
+      const [r0,c0] = cells[0], [r1,c1] = cells[cells.length-1];
+      ctx.beginPath();
+      ctx.moveTo(PAD+c0*CELL, PAD+r0*CELL);
+      ctx.lineTo(PAD+c1*CELL, PAD+r1*CELL);
+      ctx.stroke();
+      return;
+    }
+  }
+}
+
+// ─── Win check ───────────────────────────────────────────────────────────────
+
+function checkWin(r, c, player) {
+  const dirs = [[0,1],[1,0],[1,1],[1,-1]];
+  for (const [dr,dc] of dirs) {
+    if (getLine(r, c, player, dr, dc).length >= 5) return true;
+  }
+  return false;
+}
+
+function getLine(r, c, player, dr, dc) {
+  const cells = [[r,c]];
+  for (let d = 1; d < 5; d++) {
+    const nr=r+dr*d, nc=c+dc*d;
+    if (nr<0||nr>=SIZE||nc<0||nc>=SIZE||board[nr][nc]!==player) break;
+    cells.push([nr,nc]);
+  }
+  for (let d = 1; d < 5; d++) {
+    const nr=r-dr*d, nc=c-dc*d;
+    if (nr<0||nr>=SIZE||nc<0||nc>=SIZE||board[nr][nc]!==player) break;
+    cells.unshift([nr,nc]);
+  }
+  return cells;
+}
+
+// ─── Input ───────────────────────────────────────────────────────────────────
+
+canvas.addEventListener('click', e => {
+  if (gameOver) return;
+  if (mode === 'hva' && current === WHITE) return;
+  if (mode === 'ava') return;
+  const rect = canvas.getBoundingClientRect();
+  const sx = canvas.width  / rect.width;
+  const sy = canvas.height / rect.height;
+  const mx = (e.clientX - rect.left) * sx;
+  const my = (e.clientY - rect.top)  * sy;
+  const c  = Math.round((mx - PAD) / CELL);
+  const r  = Math.round((my - PAD) / CELL);
+  if (r<0||r>=SIZE||c<0||c>=SIZE) return;
+  if (!place(r, c)) return;
+  if (!gameOver && mode === 'hva') {
+    thinkingEl.style.display = 'block';
+    setTimeout(() => { aiMove(); thinkingEl.style.display = 'none'; }, 10);
+  }
+});
+
+// ─── AI ──────────────────────────────────────────────────────────────────────
+
+const SCORE = {
+  5:      1e8,
+  open4:  1e6,
+  dead4:  1e5,
+  open3:  1e4,
+  dead3:  5e2,
+  open2:  5e1,
+  dead2:  5,
+};
+
+const MINIMAX_DEPTH = 4;
+const MAX_CANDS     = 12;
+
+function countDir(r, c, player, dr, dc) {
+  let cnt = 0;
+  for (let d = 1; d < 6; d++) {
+    const nr=r+dr*d, nc=c+dc*d;
+    if (nr<0||nr>=SIZE||nc<0||nc>=SIZE||board[nr][nc]!==player) break;
+    cnt++;
+  }
+  return cnt;
+}
+
+function evalLine(r, c, player, dr, dc) {
+  const fwd = countDir(r,c,player, dr, dc);
+  const bwd = countDir(r,c,player,-dr,-dc);
+  const len = fwd + bwd + 1;
+  if (len >= 5) return SCORE[5];
+  const rF=r+dr*(fwd+1), cF=c+dc*(fwd+1);
+  const rB=r-dr*(bwd+1), cB=c-dc*(bwd+1);
+  const openF = rF>=0&&rF<SIZE&&cF>=0&&cF<SIZE && board[rF][cF]===EMPTY;
+  const openB = rB>=0&&rB<SIZE&&cB>=0&&cB<SIZE && board[rB][cB]===EMPTY;
+  if (len === 4) return (openF && openB) ? SCORE.open4 : (openF||openB) ? SCORE.dead4 : 0;
+  if (len === 3) return (openF && openB) ? SCORE.open3 : (openF||openB) ? SCORE.dead3 : 0;
+  if (len === 2) return (openF && openB) ? SCORE.open2 : (openF||openB) ? SCORE.dead2 : 0;
+  return 0;
+}
+
+function scoreCell(r, c, player) {
+  if (board[r][c] !== EMPTY) return 0;
+  board[r][c] = player;
+  const dirs = [[0,1],[1,0],[1,1],[1,-1]];
+  let s = 0;
+  for (const [dr,dc] of dirs) s += evalLine(r, c, player, dr, dc);
+  board[r][c] = EMPTY;
+  return s;
+}
+
+function getCandidates() {
+  const visited = Array.from({length:SIZE},()=>new Array(SIZE).fill(false));
+  const cands = [];
+  for (const [r,c] of history) {
+    for (let dr=-2;dr<=2;dr++) for (let dc=-2;dc<=2;dc++) {
+      const nr=r+dr, nc=c+dc;
+      if (nr>=0&&nr<SIZE&&nc>=0&&nc<SIZE && board[nr][nc]===EMPTY && !visited[nr][nc]) {
+        visited[nr][nc]=true;
+        cands.push([nr,nc]);
+      }
+    }
+  }
+  if (cands.length === 0) cands.push([7,7]);
+  return cands;
+}
+
+// ── Board evaluation: scan all lines ─────────────────────────────────────────
+
+function scoreRun(len, openL, openR) {
+  if (len >= 5) return SCORE[5];
+  if (len === 4) return (openL && openR) ? SCORE.open4 : (openL||openR) ? SCORE.dead4 : 0;
+  if (len === 3) return (openL && openR) ? SCORE.open3 : (openL||openR) ? SCORE.dead3 : 0;
+  if (len === 2) return (openL && openR) ? SCORE.open2 : (openL||openR) ? SCORE.dead2 : 0;
+  return 0;
+}
+
+function scoreLine1D(line, player) {
+  let s = 0, i = 0;
+  while (i < line.length) {
+    if (line[i] !== player) { i++; continue; }
+    let j = i;
+    while (j < line.length && line[j] === player) j++;
+    s += scoreRun(j-i, i>0 && line[i-1]===EMPTY, j<line.length && line[j]===EMPTY);
+    i = j;
+  }
+  return s;
+}
+
+function evalBoard(maximizer) {
+  const minimizer = maximizer === BLACK ? WHITE : BLACK;
+  let score = 0;
+  const addLine = line => { score += scoreLine1D(line, maximizer) - scoreLine1D(line, minimizer); };
+
+  for (let r=0; r<SIZE; r++) addLine(board[r]);
+  for (let c=0; c<SIZE; c++) {
+    const l=[]; for(let r=0;r<SIZE;r++) l.push(board[r][c]); addLine(l);
+  }
+  for (let s=-(SIZE-5); s<=SIZE-5; s++) {
+    const l=[]; for(let r=0;r<SIZE;r++){const c=r+s; if(c>=0&&c<SIZE) l.push(board[r][c]);}
+    if (l.length >= 5) addLine(l);
+  }
+  for (let s=4; s<=2*SIZE-6; s++) {
+    const l=[]; for(let r=0;r<SIZE;r++){const c=s-r; if(c>=0&&c<SIZE) l.push(board[r][c]);}
+    if (l.length >= 5) addLine(l);
+  }
+  return score;
+}
+
+// ── Minimax + Alpha-Beta ──────────────────────────────────────────────────────
+
+function getCandidatesOrdered(player) {
+  const opp = player === BLACK ? WHITE : BLACK;
+  const raw = getCandidates();
+  const scored = raw.map(([r,c]) => ({
+    r, c, s: Math.max(scoreCell(r,c,player), scoreCell(r,c,opp))
+  }));
+  scored.sort((a,b) => b.s - a.s);
+  return scored.slice(0, MAX_CANDS).map(x => [x.r, x.c]);
+}
+
+function minimax(depth, alpha, beta, isMaximizing, maximizer) {
+  if (history.length > 0) {
+    const [lr, lc, lp] = history[history.length-1];
+    if (checkWin(lr, lc, lp)) {
+      const sign = lp === maximizer ? 1 : -1;
+      return sign * (SCORE[5] + depth);
+    }
+  }
+  if (depth === 0) return evalBoard(maximizer);
+
+  const player = isMaximizing ? maximizer : (maximizer === BLACK ? WHITE : BLACK);
+  const cands  = getCandidatesOrdered(player);
+  if (cands.length === 0) return evalBoard(maximizer);
+
+  if (isMaximizing) {
+    let best = -Infinity;
+    for (const [r,c] of cands) {
+      board[r][c] = player; history.push([r,c,player]);
+      best = Math.max(best, minimax(depth-1, alpha, beta, false, maximizer));
+      history.pop(); board[r][c] = EMPTY;
+      alpha = Math.max(alpha, best);
+      if (beta <= alpha) break;
+    }
+    return best;
+  } else {
+    let best = Infinity;
+    for (const [r,c] of cands) {
+      board[r][c] = player; history.push([r,c,player]);
+      best = Math.min(best, minimax(depth-1, alpha, beta, true, maximizer));
+      history.pop(); board[r][c] = EMPTY;
+      beta = Math.min(beta, best);
+      if (beta <= alpha) break;
+    }
+    return best;
+  }
+}
+
+function aiMove() {
+  if (gameOver) return;
+  const me = current;
+
+  if (history.length === 0) {
+    place(7,7);
+    if (!gameOver && mode === 'ava') setTimeout(aiMove, 200);
+    return;
+  }
+
+  const cands = getCandidatesOrdered(me);
+  let best = -Infinity, bestMoves = [];
+
+  for (const [r,c] of cands) {
+    board[r][c] = me; history.push([r,c,me]);
+    if (checkWin(r,c,me)) {
+      history.pop(); board[r][c] = EMPTY;
+      place(r,c);
+      if (!gameOver && mode === 'ava') setTimeout(aiMove, 200);
+      return;
+    }
+    const val = minimax(MINIMAX_DEPTH - 1, -Infinity, Infinity, false, me);
+    history.pop(); board[r][c] = EMPTY;
+    if (val > best + 1e3) { best = val; bestMoves = [[r,c]]; }
+    else if (val >= best - 1e3) { bestMoves.push([r,c]); }
+  }
+
+  const [br, bc] = bestMoves[Math.floor(Math.random() * bestMoves.length)];
+  place(br, bc);
+  if (!gameOver && mode === 'ava') setTimeout(aiMove, 200);
+}
+
+// ─── Undo ─────────────────────────────────────────────────────────────────────
+
+document.getElementById('btnUndo').addEventListener('click', () => {
+  if (gameOver || history.length === 0) return;
+  // in hva mode undo 2 moves (human + ai)
+  const undoCount = mode === 'hva' ? 2 : 1;
+  for (let i = 0; i < undoCount && history.length > 0; i++) {
+    const [r, c] = history.pop();
+    board[r][c] = EMPTY;
+  }
+  current = history.length > 0 ? (history[history.length-1][2] === BLACK ? WHITE : BLACK) : BLACK;
+  draw();
+  updateStatus();
+});
+
+// ─── Mode / Restart ──────────────────────────────────────────────────────────
+
+const btnMode = document.getElementById('btnMode');
+const modeLabels = { hva:'모드: 인간 vs AI', hvh:'모드: 인간 vs 인간', ava:'모드: AI vs AI' };
+const modeOrder  = ['hva','hvh','ava'];
+
+btnMode.addEventListener('click', () => {
+  const idx = modeOrder.indexOf(mode);
+  mode = modeOrder[(idx+1) % modeOrder.length];
+  btnMode.textContent = modeLabels[mode];
+  newGame();
+});
+
+document.getElementById('btnRestart').addEventListener('click', newGame);
+
+newGame();
+</script>
+</body>
+</html>
