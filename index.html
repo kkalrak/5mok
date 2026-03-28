@@ -63,6 +63,9 @@
     display: block;
     border-radius: 4px;
     cursor: crosshair;
+    max-width: 100%;
+    height: auto;
+    touch-action: none;
   }
 
   #thinking {
@@ -255,15 +258,15 @@ function getLine(r, c, player, dr, dc) {
 
 // ─── Input ───────────────────────────────────────────────────────────────────
 
-canvas.addEventListener('click', e => {
+function handleInput(clientX, clientY) {
   if (gameOver) return;
   if (mode === 'hva' && current === WHITE) return;
   if (mode === 'ava') return;
   const rect = canvas.getBoundingClientRect();
   const sx = canvas.width  / rect.width;
   const sy = canvas.height / rect.height;
-  const mx = (e.clientX - rect.left) * sx;
-  const my = (e.clientY - rect.top)  * sy;
+  const mx = (clientX - rect.left) * sx;
+  const my = (clientY - rect.top)  * sy;
   const c  = Math.round((mx - PAD) / CELL);
   const r  = Math.round((my - PAD) / CELL);
   if (r<0||r>=SIZE||c<0||c>=SIZE) return;
@@ -272,6 +275,14 @@ canvas.addEventListener('click', e => {
     thinkingEl.style.display = 'block';
     setTimeout(() => { aiMove(); thinkingEl.style.display = 'none'; }, 10);
   }
+}
+
+canvas.addEventListener('click', e => handleInput(e.clientX, e.clientY));
+
+canvas.addEventListener('touchend', e => {
+  e.preventDefault();
+  const t = e.changedTouches[0];
+  handleInput(t.clientX, t.clientY);
 });
 
 // ─── AI ──────────────────────────────────────────────────────────────────────
